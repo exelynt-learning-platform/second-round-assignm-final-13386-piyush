@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Spring Boot E-commerce Backend
 
 Complete e-commerce backend built with Spring Boot, Spring Security (JWT), Spring Data JPA, and Stripe checkout integration.
@@ -135,3 +136,7 @@ Unit tests cover:
 - Authentication service (`AuthServiceTest`)
 - Cart operations (`CartServiceTest`)
 - Order creation (`OrderServiceTest`)
+=======
+# second-round-assignm-final-13386-piyush
+Final Project Assignment - This repository contains the complete final project code and documentation.
+>>>>>>> b2e063f30da03c87eb0e5faea97418408f387d39
