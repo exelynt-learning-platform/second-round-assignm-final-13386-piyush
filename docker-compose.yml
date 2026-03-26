@@ -1,0 +1,15 @@
+version: '3.9'
+services:
+  app:
+    build: .
+    container_name: ecommerce-backend
+    restart: unless-stopped
+    environment:
+      JWT_SECRET: change-this-to-a-long-random-secret-change-this-to-a-long-random-secret
+      JWT_EXPIRATION_MS: 86400000
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET}
+      APP_SEED_ADMIN_EMAIL: admin@example.com
+      APP_SEED_ADMIN_PASSWORD: Admin@12345
+    ports:
+      - "8080:8080"

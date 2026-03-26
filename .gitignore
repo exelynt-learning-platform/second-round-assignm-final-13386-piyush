@@ -1,0 +1,26 @@
+target/
+!.mvn/wrapper/maven-wrapper.jar
+
+### IDE ###
+.idea/
+*.iml
+.vscode/
+
+### OS ###
+.DS_Store
+Thumbs.db
+
+### Logs ###
+*.log
+logs/
+
+### Env ###
+.env
+.env.local
+
+### Database ###
+postgres_data/
+redis_data/
+
+### Docker ###
+docker-compose.override.yml
