@@ -12,15 +12,15 @@ import com.ecommerce.backend.entity.enums.OrderStatus;
 import com.ecommerce.backend.exception.BadRequestException;
 import com.ecommerce.backend.exception.PaymentException;
 import com.ecommerce.backend.exception.ResourceNotFoundException;
+import com.ecommerce.backend.payment.StripeClientProvider;
 import com.ecommerce.backend.repository.StripeEventRepository;
-import com.stripe.Stripe;
+import com.stripe.StripeClient;
 import com.stripe.exception.StripeException;
 import com.stripe.model.Event;
 import com.stripe.model.EventDataObjectDeserializer;
 import com.stripe.model.checkout.Session;
 import com.stripe.net.Webhook;
 import com.stripe.param.checkout.SessionCreateParams;
-import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -31,29 +31,24 @@ import java.math.BigDecimal;
 import java.time.Instant;
 import java.util.Optional;
 
+import static com.ecommerce.backend.util.ValidationUtils.isBlank;
+import static com.ecommerce.backend.util.ValidationUtils.requireNonBlank;
+import static com.ecommerce.backend.util.ValidationUtils.requireNonNull;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class PaymentService {
 
     private final StripeProperties stripeProperties;
+    private final StripeClientProvider stripeClientProvider;
     private final OrderService orderService;
     private final StripeEventRepository stripeEventRepository;
-
-    @PostConstruct
-    public void init() {
-        if (stripeProperties.secretKey() != null && !stripeProperties.secretKey().isBlank()) {
-            Stripe.apiKey = stripeProperties.secretKey();
-        }
-    }
 
     @Transactional
     public PaymentSessionResponse createPaymentSession(CreatePaymentSessionRequest request) {
         validateCreatePaymentSessionRequest(request);
-
-        if (stripeProperties.secretKey() == null || stripeProperties.secretKey().isBlank()) {
-            throw new PaymentException("Stripe secret key is not configured");
-        }
+        StripeClient stripeClient = stripeClientProvider.getDefaultClient();
 
         Order order = orderService.getMyOrderEntity(request.orderId());
 
@@ -68,8 +63,8 @@ public class PaymentService {
             throw new BadRequestException("Order does not contain any items");
         }
 
-        String successUrl = request.successUrl().trim();
-        String cancelUrl = request.cancelUrl().trim();
+        String successUrl = requireNonBlank(request.successUrl(), "Success URL is required");
+        String cancelUrl = requireNonBlank(request.cancelUrl(), "Cancel URL is required");
 
         SessionCreateParams.Builder params = SessionCreateParams.builder()
                 .setMode(SessionCreateParams.Mode.PAYMENT)
@@ -116,7 +111,7 @@ public class PaymentService {
         }
 
         try {
-            Session session = Session.create(params.build());
+            Session session = stripeClient.checkout().sessions().create(params.build());
             order.setPaymentSessionId(session.getId());
             orderService.saveOrder(order);
 
@@ -143,19 +138,16 @@ public class PaymentService {
         if (order.getStatus() == OrderStatus.FAILED) {
             throw new BadRequestException("Failed order cannot be marked as paid");
         }
-        if (isBlank(sessionId)) {
-            throw new BadRequestException("Session id is required");
-        }
+        String normalizedSessionId = requireNonBlank(sessionId, "Session id is required");
 
-        if (order.getPaymentSessionId() == null || !order.getPaymentSessionId().equals(sessionId)) {
+        if (order.getPaymentSessionId() == null || !order.getPaymentSessionId().equals(normalizedSessionId)) {
             throw new BadRequestException("Invalid payment session for this order");
         }
-        if (stripeProperties.secretKey() == null || stripeProperties.secretKey().isBlank()) {
-            throw new PaymentException("Stripe secret key is not configured");
-        }
+
+        StripeClient stripeClient = stripeClientProvider.getDefaultClient();
 
         try {
-            Session session = Session.retrieve(sessionId);
+            Session session = stripeClient.checkout().sessions().retrieve(normalizedSessionId);
             if (!"paid".equalsIgnoreCase(session.getPaymentStatus())) {
                 throw new BadRequestException("Payment is not confirmed by Stripe");
             }
@@ -170,6 +162,7 @@ public class PaymentService {
     @Transactional
     public PaymentStatusResponse handlePaymentFailure(Long orderId, String sessionId) {
         Order order = orderService.getMyOrderEntity(orderId);
+        String normalizedSessionId = isBlank(sessionId) ? null : sessionId.trim();
 
         if (order.getStatus() == OrderStatus.PAID) {
             throw new BadRequestException("Paid order cannot be marked as failed");
@@ -178,8 +171,8 @@ public class PaymentService {
             return new PaymentStatusResponse(order.getId(), OrderStatus.FAILED.name(), "Order is already marked as failed");
         }
 
-        if (!isBlank(sessionId)) {
-            if (isBlank(order.getPaymentSessionId()) || !order.getPaymentSessionId().equals(sessionId)) {
+        if (normalizedSessionId != null) {
+            if (isBlank(order.getPaymentSessionId()) || !order.getPaymentSessionId().equals(normalizedSessionId)) {
                 throw new BadRequestException("Invalid payment session for this order");
             }
         }
@@ -190,19 +183,19 @@ public class PaymentService {
 
     @Transactional
     public StripeWebhookResponse handleWebhookEvent(String payload, String signatureHeader) {
-        if (stripeProperties.webhookSecret() == null || stripeProperties.webhookSecret().isBlank()) {
-            throw new PaymentException("Stripe webhook secret is not configured");
-        }
+        String webhookSecret = requireWebhookSecret();
         if (isBlank(payload)) {
             throw new PaymentException("Webhook payload is required");
         }
         if (isBlank(signatureHeader)) {
             throw new PaymentException("Stripe signature header is required");
         }
+        String rawPayload = payload;
+        String stripeSignature = signatureHeader;
 
         Event event;
         try {
-            event = Webhook.constructEvent(payload, signatureHeader, stripeProperties.webhookSecret());
+            event = Webhook.constructEvent(rawPayload, stripeSignature, webhookSecret);
         } catch (Exception ex) {
             throw new PaymentException("Invalid Stripe webhook signature", ex);
         }
@@ -214,7 +207,7 @@ public class PaymentService {
         StripeEvent stripeEvent = StripeEvent.builder()
                 .eventId(event.getId())
                 .type(event.getType())
-                .payload(payload)
+                .payload(rawPayload)
                 .processed(false)
                 .build();
         try {
@@ -276,18 +269,10 @@ public class PaymentService {
     }
 
     private void validateCreatePaymentSessionRequest(CreatePaymentSessionRequest request) {
-        if (request == null) {
-            throw new BadRequestException("Create payment session request is required");
-        }
-        if (request.orderId() == null) {
-            throw new BadRequestException("Order id is required");
-        }
-        if (isBlank(request.successUrl())) {
-            throw new BadRequestException("Success URL is required");
-        }
-        if (isBlank(request.cancelUrl())) {
-            throw new BadRequestException("Cancel URL is required");
-        }
+        CreatePaymentSessionRequest paymentSessionRequest = requireNonNull(request, "Create payment session request is required");
+        requireNonNull(paymentSessionRequest.orderId(), "Order id is required");
+        requireNonBlank(paymentSessionRequest.successUrl(), "Success URL is required");
+        requireNonBlank(paymentSessionRequest.cancelUrl(), "Cancel URL is required");
     }
 
     private void markStripeEventProcessed(StripeEvent stripeEvent) {
@@ -296,7 +281,11 @@ public class PaymentService {
         stripeEventRepository.save(stripeEvent);
     }
 
-    private boolean isBlank(String value) {
-        return value == null || value.isBlank();
+    private String requireWebhookSecret() {
+        String webhookSecret = stripeProperties.webhookSecret();
+        if (isBlank(webhookSecret)) {
+            throw new PaymentException("Stripe webhook secret is not configured");
+        }
+        return webhookSecret.trim();
     }
 }

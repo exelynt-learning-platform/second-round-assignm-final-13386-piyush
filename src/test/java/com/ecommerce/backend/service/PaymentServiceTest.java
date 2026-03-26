@@ -7,6 +7,7 @@ import com.ecommerce.backend.entity.Order;
 import com.ecommerce.backend.entity.enums.OrderStatus;
 import com.ecommerce.backend.exception.BadRequestException;
 import com.ecommerce.backend.exception.PaymentException;
+import com.ecommerce.backend.payment.StripeClientProvider;
 import com.ecommerce.backend.repository.StripeEventRepository;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -27,13 +28,19 @@ class PaymentServiceTest {
     @Mock
     private StripeEventRepository stripeEventRepository;
 
+    @Mock
+    private StripeClientProvider stripeClientProvider;
+
     @Test
     void createPaymentSession_ShouldFailWhenStripeKeyMissing() {
         PaymentService paymentService = new PaymentService(
                 new StripeProperties("", "whsec_test"),
+                stripeClientProvider,
                 orderService,
                 stripeEventRepository
         );
+        when(stripeClientProvider.getDefaultClient())
+                .thenThrow(new PaymentException("Stripe secret key is not configured"));
 
         assertThatThrownBy(() -> paymentService.createPaymentSession(
                 new CreatePaymentSessionRequest(1L, "http://localhost/success", "http://localhost/cancel")
@@ -51,6 +58,7 @@ class PaymentServiceTest {
 
         PaymentService paymentService = new PaymentService(
                 new StripeProperties("sk_test_123", "whsec_test"),
+                stripeClientProvider,
                 orderService,
                 stripeEventRepository
         );
@@ -68,6 +76,7 @@ class PaymentServiceTest {
     void handleWebhookEvent_ShouldFailWhenWebhookSecretMissing() {
         PaymentService paymentService = new PaymentService(
                 new StripeProperties("sk_test_123", ""),
+                stripeClientProvider,
                 orderService,
                 stripeEventRepository
         );
@@ -87,6 +96,7 @@ class PaymentServiceTest {
 
         PaymentService paymentService = new PaymentService(
                 new StripeProperties("sk_test_123", "whsec_test"),
+                stripeClientProvider,
                 orderService,
                 stripeEventRepository
         );

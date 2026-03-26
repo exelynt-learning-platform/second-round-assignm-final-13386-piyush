@@ -27,6 +27,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 
+import static com.ecommerce.backend.util.ValidationUtils.isBlank;
+import static com.ecommerce.backend.util.ValidationUtils.requireNonBlank;
+import static com.ecommerce.backend.util.ValidationUtils.requireNonNull;
+import static com.ecommerce.backend.util.ValidationUtils.requirePositive;
+import static com.ecommerce.backend.util.ValidationUtils.trimToNull;
+
 @Slf4j
 @Service
 @RequiredArgsConstructor
@@ -39,7 +45,7 @@ public class OrderService {
 
     @Transactional
     public OrderResponse createOrder(CreateOrderRequest request) {
-        validateCreateOrderRequest(request);
+        ShippingDetailsRequest shippingDetails = validateCreateOrderRequest(request);
 
         User user = userService.getCurrentAuthenticatedUser();
         Cart cart = cartService.getOrCreateCart(user);
@@ -51,7 +57,7 @@ public class OrderService {
         Order order = Order.builder()
                 .user(user)
                 .status(OrderStatus.PENDING)
-                .shippingDetails(mapShipping(request))
+                .shippingDetails(mapShipping(shippingDetails))
                 .items(new ArrayList<>())
                 .totalPrice(BigDecimal.ZERO)
                 .build();
@@ -136,29 +142,23 @@ public class OrderService {
 
     @Transactional
     public void markOrderPaidBySessionId(String sessionId, String paymentIntentId) {
-        if (sessionId == null || sessionId.isBlank()) {
-            throw new BadRequestException("Payment session id is required");
-        }
-        Order order = orderRepository.findByPaymentSessionId(sessionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Order not found for payment session: " + sessionId));
+        String normalizedSessionId = requireNonBlank(sessionId, "Payment session id is required");
+        Order order = orderRepository.findByPaymentSessionId(normalizedSessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Order not found for payment session: " + normalizedSessionId));
         markOrderPaid(order, paymentIntentId);
     }
 
     @Transactional
     public void markOrderFailedBySessionId(String sessionId) {
-        if (sessionId == null || sessionId.isBlank()) {
-            throw new BadRequestException("Payment session id is required");
-        }
-        Order order = orderRepository.findByPaymentSessionId(sessionId)
-                .orElseThrow(() -> new ResourceNotFoundException("Order not found for payment session: " + sessionId));
+        String normalizedSessionId = requireNonBlank(sessionId, "Payment session id is required");
+        Order order = orderRepository.findByPaymentSessionId(normalizedSessionId)
+                .orElseThrow(() -> new ResourceNotFoundException("Order not found for payment session: " + normalizedSessionId));
         markOrderFailed(order);
     }
 
     @Transactional
     public void markOrderPaid(Order order, String paymentIntentId) {
-        if (order == null) {
-            throw new BadRequestException("Order is required");
-        }
+        requireNonNull(order, "Order is required");
         if (order.getStatus() == OrderStatus.PAID) {
             return;
         }
@@ -173,9 +173,7 @@ public class OrderService {
 
     @Transactional
     public void markOrderFailed(Order order) {
-        if (order == null) {
-            throw new BadRequestException("Order is required");
-        }
+        requireNonNull(order, "Order is required");
         if (order.getStatus() == OrderStatus.FAILED) {
             return;
         }
@@ -198,15 +196,13 @@ public class OrderService {
             if (item.getProduct() == null || item.getProduct().getId() == null) {
                 throw new BadRequestException("Order item product is invalid");
             }
-            if (item.getQuantity() == null || item.getQuantity() <= 0) {
-                throw new BadRequestException("Order item quantity is invalid");
-            }
+            int quantityToRestore = requirePositive(item.getQuantity(), "Order item quantity is invalid");
 
             Product product = productRepository.findByIdForUpdate(item.getProduct().getId())
                     .orElseThrow(() -> new ResourceNotFoundException("Product not found with id: " + item.getProduct().getId()));
 
             int currentStock = safeStock(product);
-            product.setStockQuantity(currentStock + item.getQuantity());
+            product.setStockQuantity(currentStock + quantityToRestore);
             productRepository.save(product);
         }
     }
@@ -231,27 +227,22 @@ public class OrderService {
         return product.getPrice();
     }
 
-    private ShippingDetails mapShipping(CreateOrderRequest request) {
-        ShippingDetailsRequest shipping = request.shippingDetails();
+    private ShippingDetails mapShipping(ShippingDetailsRequest shipping) {
         return ShippingDetails.builder()
-                .addressLine1(shipping.addressLine1().trim())
+                .addressLine1(requireNonBlank(shipping.addressLine1(), "Shipping details are incomplete"))
                 .addressLine2(trimToNull(shipping.addressLine2()))
-                .city(shipping.city().trim())
-                .state(shipping.state().trim())
-                .postalCode(shipping.postalCode().trim())
-                .country(shipping.country().trim())
+                .city(requireNonBlank(shipping.city(), "Shipping details are incomplete"))
+                .state(requireNonBlank(shipping.state(), "Shipping details are incomplete"))
+                .postalCode(requireNonBlank(shipping.postalCode(), "Shipping details are incomplete"))
+                .country(requireNonBlank(shipping.country(), "Shipping details are incomplete"))
                 .phone(trimToNull(shipping.phone()))
                 .build();
     }
 
-    private void validateCreateOrderRequest(CreateOrderRequest request) {
-        if (request == null) {
-            throw new BadRequestException("Create order request is required");
-        }
-        ShippingDetailsRequest shipping = request.shippingDetails();
-        if (shipping == null) {
-            throw new BadRequestException("Shipping details are required");
-        }
+    private ShippingDetailsRequest validateCreateOrderRequest(CreateOrderRequest request) {
+        CreateOrderRequest createOrderRequest = requireNonNull(request, "Create order request is required");
+        ShippingDetailsRequest shipping = requireNonNull(createOrderRequest.shippingDetails(), "Shipping details are required");
+
         if (isBlank(shipping.addressLine1())
                 || isBlank(shipping.city())
                 || isBlank(shipping.state())
@@ -259,27 +250,14 @@ public class OrderService {
                 || isBlank(shipping.country())) {
             throw new BadRequestException("Shipping details are incomplete");
         }
+        return shipping;
     }
 
     private void validateCartItem(CartItem cartItem) {
         if (cartItem == null || cartItem.getProduct() == null || cartItem.getProduct().getId() == null) {
             throw new BadRequestException("Cart contains an invalid product item");
         }
-        if (cartItem.getQuantity() == null || cartItem.getQuantity() <= 0) {
-            throw new BadRequestException("Cart contains an invalid quantity");
-        }
-    }
-
-    private boolean isBlank(String value) {
-        return value == null || value.isBlank();
-    }
-
-    private String trimToNull(String value) {
-        if (value == null) {
-            return null;
-        }
-        String trimmed = value.trim();
-        return trimmed.isEmpty() ? null : trimmed;
+        requirePositive(cartItem.getQuantity(), "Cart contains an invalid quantity");
     }
 }
 

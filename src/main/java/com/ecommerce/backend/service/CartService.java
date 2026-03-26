@@ -13,9 +13,9 @@ import com.ecommerce.backend.mapper.CartMapper;
 import com.ecommerce.backend.repository.CartItemRepository;
 import com.ecommerce.backend.repository.CartRepository;
 import com.ecommerce.backend.repository.ProductRepository;
+import com.ecommerce.backend.repository.UserRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -31,6 +31,7 @@ public class CartService {
     private final CartRepository cartRepository;
     private final CartItemRepository cartItemRepository;
     private final ProductRepository productRepository;
+    private final UserRepository userRepository;
     private final UserService userService;
 
     @Transactional
@@ -45,7 +46,7 @@ public class CartService {
         validateAddItemRequest(request);
 
         User user = userService.getCurrentAuthenticatedUser();
-        Cart cart = getOrCreateCart(user);
+        Cart cart = getOrCreateCartForUpdate(user);
         ensureCartItemsInitialized(cart);
 
         Product product = productRepository.findById(request.productId())
@@ -53,29 +54,15 @@ public class CartService {
 
         ensureProductPurchasable(product);
 
-        Optional<CartItem> existingItem = cartItemRepository.findByCartIdAndProductId(cart.getId(), product.getId());
-
-        CartItem item;
-        if (existingItem.isPresent()) {
-            item = existingItem.get();
-        } else {
-            item = CartItem.builder()
-                    .cart(cart)
-                    .product(product)
-                    .quantity(0)
-                    .unitPrice(product.getPrice())
-                    .build();
-            cart.getItems().add(item);
-        }
-
+        CartItem item = cartItemRepository.findByCartIdAndProductIdForUpdate(cart.getId(), product.getId())
+                .orElseGet(() -> newCartItem(cart, product));
         int updatedQuantity = safeQuantity(item.getQuantity()) + request.quantity();
-        if (updatedQuantity > product.getStockQuantity()) {
-            throw new BadRequestException("Insufficient stock for product: " + product.getName());
-        }
+        ensureQuantityWithinStock(updatedQuantity, product);
 
         item.setQuantity(updatedQuantity);
         item.setUnitPrice(product.getPrice());
-        saveCartItemHandlingConcurrentDuplicate(item, cart, product, request.quantity());
+        CartItem savedItem = cartItemRepository.save(item);
+        attachItemIfMissing(cart, savedItem);
 
         Cart updatedCart = cartRepository.findByUserId(user.getId()).orElse(cart);
         log.info("Cart item added/updated: userId={}, productId={}, quantity={}", user.getId(), product.getId(), updatedQuantity);
@@ -87,13 +74,10 @@ public class CartService {
         validateUpdateItemRequest(request);
 
         User user = userService.getCurrentAuthenticatedUser();
-        CartItem item = getItemForCurrentUser(itemId, user.getId());
+        CartItem item = getItemForCurrentUser(itemId, user.getId(), true);
 
         ensureProductPurchasable(item.getProduct());
-
-        if (request.quantity() > item.getProduct().getStockQuantity()) {
-            throw new BadRequestException("Insufficient stock for product: " + item.getProduct().getName());
-        }
+        ensureQuantityWithinStock(request.quantity(), item.getProduct());
 
         item.setQuantity(request.quantity());
         cartItemRepository.save(item);
@@ -106,7 +90,7 @@ public class CartService {
     @Transactional
     public CartResponse removeItem(Long itemId) {
         User user = userService.getCurrentAuthenticatedUser();
-        CartItem item = getItemForCurrentUser(itemId, user.getId());
+        CartItem item = getItemForCurrentUser(itemId, user.getId(), true);
 
         ensureCartItemsInitialized(item.getCart());
         item.getCart().getItems().remove(item);
@@ -143,10 +127,7 @@ public class CartService {
     @Transactional
     public Cart getOrCreateCart(User user) {
         Cart cart = cartRepository.findByUserId(user.getId())
-                .orElseGet(() -> {
-                    log.info("Creating cart for userId={}", user.getId());
-                    return cartRepository.save(Cart.builder().user(user).build());
-                });
+                .orElseGet(() -> createCart(user));
         ensureCartItemsInitialized(cart);
         return cart;
     }
@@ -157,8 +138,26 @@ public class CartService {
         return getOrCreateCart(user);
     }
 
-    private CartItem getItemForCurrentUser(Long itemId, Long userId) {
-        CartItem item = cartItemRepository.findById(itemId)
+    private Cart getOrCreateCartForUpdate(User user) {
+        User lockedUser = userRepository.findByIdForUpdate(user.getId())
+                .orElseThrow(() -> new ResourceNotFoundException("User not found with id: " + user.getId()));
+        Cart cart = cartRepository.findByUserIdForUpdate(lockedUser.getId())
+                .orElseGet(() -> createCart(lockedUser));
+        ensureCartItemsInitialized(cart);
+        return cart;
+    }
+
+    private Cart createCart(User user) {
+        log.info("Creating cart for userId={}", user.getId());
+        return cartRepository.save(Cart.builder().user(user).build());
+    }
+
+    private CartItem getItemForCurrentUser(Long itemId, Long userId, boolean forUpdate) {
+        Optional<CartItem> itemQueryResult = forUpdate
+                ? cartItemRepository.findByIdForUpdate(itemId)
+                : cartItemRepository.findById(itemId);
+
+        CartItem item = itemQueryResult
                 .orElseThrow(() -> new ResourceNotFoundException("Cart item not found with id: " + itemId));
 
         if (item.getCart() == null || item.getCart().getUser() == null || !item.getCart().getUser().getId().equals(userId)) {
@@ -206,30 +205,35 @@ public class CartService {
         return quantity == null ? 0 : quantity;
     }
 
+    private void ensureQuantityWithinStock(int quantity, Product product) {
+        if (quantity > product.getStockQuantity()) {
+            throw new BadRequestException("Insufficient stock for product: " + product.getName());
+        }
+    }
+
+    private CartItem newCartItem(Cart cart, Product product) {
+        return CartItem.builder()
+                .cart(cart)
+                .product(product)
+                .quantity(0)
+                .unitPrice(product.getPrice())
+                .build();
+    }
+
+    private void attachItemIfMissing(Cart cart, CartItem item) {
+        boolean alreadyAttached = cart.getItems().stream().anyMatch(existing ->
+                existing == item || (existing.getId() != null && existing.getId().equals(item.getId())));
+        if (!alreadyAttached) {
+            cart.getItems().add(item);
+        }
+    }
+
     private void ensureCartItemsInitialized(Cart cart) {
         if (cart == null) {
             throw new BadRequestException("Cart is required");
         }
         if (cart.getItems() == null) {
             cart.setItems(new ArrayList<>());
-        }
-    }
-
-    private void saveCartItemHandlingConcurrentDuplicate(CartItem item, Cart cart, Product product, int requestedQuantity) {
-        try {
-            cartItemRepository.save(item);
-        } catch (DataIntegrityViolationException ex) {
-            CartItem existing = cartItemRepository.findByCartIdAndProductId(cart.getId(), product.getId())
-                    .orElseThrow(() -> new BadRequestException("Could not update cart item, please retry"));
-
-            int mergedQuantity = safeQuantity(existing.getQuantity()) + requestedQuantity;
-            if (mergedQuantity > product.getStockQuantity()) {
-                throw new BadRequestException("Insufficient stock for product: " + product.getName());
-            }
-
-            existing.setQuantity(mergedQuantity);
-            existing.setUnitPrice(product.getPrice());
-            cartItemRepository.save(existing);
         }
     }
 }

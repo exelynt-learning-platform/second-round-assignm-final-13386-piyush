@@ -10,6 +10,7 @@ import com.ecommerce.backend.entity.User;
 import com.ecommerce.backend.repository.CartItemRepository;
 import com.ecommerce.backend.repository.CartRepository;
 import com.ecommerce.backend.repository.ProductRepository;
+import com.ecommerce.backend.repository.UserRepository;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -40,6 +41,9 @@ class CartServiceTest {
     @Mock
     private UserService userService;
 
+    @Mock
+    private UserRepository userRepository;
+
     @InjectMocks
     private CartService cartService;
 
@@ -63,9 +67,11 @@ class CartServiceTest {
                 .build();
 
         when(userService.getCurrentAuthenticatedUser()).thenReturn(user);
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(user));
         when(cartRepository.findByUserId(1L)).thenReturn(Optional.of(cart));
+        when(cartRepository.findByUserIdForUpdate(1L)).thenReturn(Optional.of(cart));
         when(productRepository.findById(5L)).thenReturn(Optional.of(product));
-        when(cartItemRepository.findByCartIdAndProductId(100L, 5L)).thenReturn(Optional.empty());
+        when(cartItemRepository.findByCartIdAndProductIdForUpdate(100L, 5L)).thenReturn(Optional.empty());
         when(cartItemRepository.save(any(CartItem.class))).thenAnswer(invocation -> {
             CartItem item = invocation.getArgument(0);
             item.setId(200L);
@@ -99,7 +105,7 @@ class CartServiceTest {
         cart.getItems().add(item);
 
         when(userService.getCurrentAuthenticatedUser()).thenReturn(user);
-        when(cartItemRepository.findById(201L)).thenReturn(Optional.of(item));
+        when(cartItemRepository.findByIdForUpdate(201L)).thenReturn(Optional.of(item));
         when(cartRepository.findByUserId(1L)).thenReturn(Optional.of(cart));
         when(cartItemRepository.save(any(CartItem.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
@@ -130,9 +136,11 @@ class CartServiceTest {
         cart.getItems().add(existingItem);
 
         when(userService.getCurrentAuthenticatedUser()).thenReturn(user);
+        when(userRepository.findByIdForUpdate(1L)).thenReturn(Optional.of(user));
         when(cartRepository.findByUserId(1L)).thenReturn(Optional.of(cart));
+        when(cartRepository.findByUserIdForUpdate(1L)).thenReturn(Optional.of(cart));
         when(productRepository.findById(5L)).thenReturn(Optional.of(product));
-        when(cartItemRepository.findByCartIdAndProductId(100L, 5L)).thenReturn(Optional.of(existingItem));
+        when(cartItemRepository.findByCartIdAndProductIdForUpdate(100L, 5L)).thenReturn(Optional.of(existingItem));
         when(cartItemRepository.save(any(CartItem.class))).thenAnswer(invocation -> invocation.getArgument(0));
 
         CartResponse response = cartService.addItem(new AddCartItemRequest(5L, 3));
